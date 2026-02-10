@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>La Otra Mente - AI Edition</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- TensorFlow.js (Bundle Unificado para evitar errores de versión) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <!-- Modelo Face Landmarks -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection"></script>
+
+    <style>
+        body {
+            background-color: #000;
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        /* Efectos visuales */
+        .scan-line {
+            width: 100%;
+            height: 2px;
+            background: rgba(0, 255, 0, 0.3);
+            position: absolute;
+            animation: scan 3s linear infinite;
+            z-index: 10;
+            pointer-events: none;
+        }
+        @keyframes scan { 0% { top: 0%; } 100% { top: 100%; } }
+
+        .hidden { display: none !important; }
+        
+        /* Video oculto pero necesario para TF.js */
+        #webcam {
+            position: absolute;
+            top: 0;
+            left: 0;
+            opacity: 0; 
+            z-index: -1;
+            width: 640px;
+            height: 480px;
+            transform: scaleX(-1); /* Espejo */
+        }
+
+        /* Canvas para debug (opcional, lo dejaremos transparente para la inmersión) */
+        #output {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scaleX(-1);
+            z-index: 5;
+            opacity: 0.3; /* Leve feedback visual */
+            pointer-events: none;
+        }
+
+        .loader {
+            border: 4px solid #333;
+            border-top: 4px solid #fff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        .status-text {
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col relative bg-black">
+
+    <div class="scan-line"></div>
+
+    <!-- PANTALLA DE CARGA INICIAL (MODELOS IA) -->
+    <div id="loading-screen" class="absolute inset-0 z-50 bg-black flex flex-col items-center justify-center">
+        <div class="loader mb-4"></div>
+        <p class="text-green-500 text-sm animate-pulse">CARGANDO RED NEURONAL...</p>
+        <p id="loading-status" class="text-xs text-gray-500 mt-2">Inicializando TensorFlow...</p>
+    </div>
+
+    <!-- PANTALLA DE INICIO -->
+    <div id="home-screen" class="hidden flex-1 flex flex-col items-center justify-center space-y-8 p-6 z-20">
+        <h1 class="text-4xl font-bold tracking-widest text-center uppercase text-white mb-4">NEURAL ECHO</h1>
+        <p class="text-gray-400 text-center text-xs max-w-md mb-8">
+            Este experimento usa tu cámara para detectar si tus ojos están cerrados y la dirección de tu cabeza.
+        </p>
+
+        <div class="flex flex-col w-full max-w-xs gap-4">
+            <button onclick="goToRecord()" class="border border-green-500 text-green-500 hover:bg-green-900 py-4 px-6 rounded font-bold transition">
+                1. GRABAR MEMORIA
+            </button>
+            <button onclick="startExperience()" class="bg-white text-black hover:bg-gray-200 py-4 px-6 rounded font-bold transition">
+                2. INICIAR EXPERIENCIA
+            </button>
+        </div>
+    </div>
+
+    <!-- PANTALLA DE GRABACIÓN -->
+    <div id="record-screen" class="hidden absolute inset-0 z-30 bg-gray-900 flex flex-col items-center justify-center">
+        <h2 class="text-xl mb-8 text-white">Graba el pensamiento</h2>
+        <div class="text-4xl font-mono mb-8 text-green-400" id="timer">00:00</div>
+        
+        <button id="rec-btn" class="w-20 h-20 rounded-full bg-red-600 border-4 border-white hover:scale-110 transition-transform mb-8"></button>
+        
+        <div id="post-rec-actions" class="hidden flex gap-4">
+            <button onclick="resetRecording()" class="text-white underline text-sm">Borrar</button>
+            <button onclick="saveAndExit()" class="bg-white text-black px-6 py-2 rounded-full font-bold">Guardar</button>
+        </div>
+        <button onclick="goHome()" class="absolute top-6 left-6 text-gray-400 text-sm">← Volver</button>
+    </div>
+
+    <!-- PANTALLA DE EXPERIENCIA -->
+    <div id="experience-screen" class="hidden absolute inset-0 z-40 bg-black flex flex-col items-center justify-center text-center">
+        
+        <!-- Feedback de estado -->
+        <div id="status-indicator" class="text-2xl font-bold mb-4 status-text transition-colors duration-300 text-red-500">
+            OJOS ABIERTOS DETECTADOS
+        </div>
+        
+        <p id="instruction-sub" class="text-gray-500 text-sm max-w-xs transition-opacity duration-500">
+            Cierra los ojos para entrar en la mente.<br>Gira tu cabeza para encontrar la señal.
+        </p>
+
+        <!-- Visualización de debug (la cara detectada) -->
+        <canvas id="output"></canvas>
+        <video id="webcam" autoplay playsinline></video>
+
+        <button onclick="stopExperience()" class="absolute bottom-8 text-gray-600 text-sm border border-gray-800 px-4 py-2 rounded hover:text-white z-50">
+            DETENER SIMULACIÓN
+        </button>
+    </div>
+
+    <script>
+        // --- CONFIGURACIÓN GLOBAL ---
+        let model = null;
+        let video = document.getElementById('webcam');
+        let canvas = document.getElementById('output');
+        let ctx = canvas.getContext('2d');
+        let animationId = null;
+        
+        // --- ESTADO DEL JUEGO ---
+        let gameActive = false;
+        let eyesClosed = false;
+        let eyesClosedStartTime = 0;
+        let headRotation = 0; // -1 (Izquierda) a 1 (Derecha)
+        let targetRotation = 0; // Donde está el sonido
+        let isConnected = false;
+        
+        // --- ESTADO AUDIO ---
+        let recordedBlob = null;
+        let audioCtx = null;
+        let humOsc = null;
+        let humGain = null;
+        let voiceSource = null;
+        let reverbNode = null;
+        let masterGain = null;
+
+        // --- INICIALIZACIÓN IA ---
+        async function loadAI() {
+            const status = document.getElementById('loading-status');
+            try {
+                // Esperar a que TFJS esté listo
+                status.innerText = "Inicializando Backend WebGL...";
+                await tf.ready();
+                await tf.setBackend('webgl');
+
+                status.innerText = "Cargando modelo Face Landmarks...";
+                
+                // Cargar el modelo de detección facial
+                // Usamos la configuración por defecto que es más estable
+                const modelLoader = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
+                const detectorConfig = {
+                    runtime: 'tfjs',
+                    refineLandmarks: true, // Importante para mejor detalle de ojos
+                    maxFaces: 1
+                };
+                model = await faceLandmarksDetection.createDetector(modelLoader, detectorConfig);
+                
+                status.innerText = "Listo.";
+                setTimeout(() => {
+                    document.getElementById('loading-screen').classList.add('hidden');
+                    document.getElementById('home-screen').classList.remove('hidden');
+                }, 1000);
+            } catch (err) {
+                status.innerText = "Error: " + err.message;
+                console.error("Error loading TFJS:", err);
+            }
+        }
+
+        // Iniciar carga al abrir
+        window.addEventListener('DOMContentLoaded', loadAI);
+
+        // --- NAVEGACIÓN UI ---
+        function switchScreen(id) {
+            ['home-screen', 'record-screen', 'experience-screen'].forEach(s => 
+                document.getElementById(s).classList.add('hidden')
+            );
+            document.getElementById(id).classList.remove('hidden');
+        }
+        function goHome() { switchScreen('home-screen'); }
+        function goToRecord() { switchScreen('record-screen'); }
+
+        // --- GRABACIÓN DE AUDIO ---
+        let mediaRecorder, chunks = [];
+        const recBtn = document.getElementById('rec-btn');
+        const timerDisplay = document.getElementById('timer');
+        let recInterval;
+
+        recBtn.addEventListener('click', () => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') stopRec();
+            else startRec();
+        });
+
+        async function startRec() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                chunks = [];
+                mediaRecorder.ondataavailable = e => chunks.push(e.data);
+                mediaRecorder.onstop = () => {
+                    recordedBlob = new Blob(chunks, { type: 'audio/webm' });
+                    document.getElementById('post-rec-actions').classList.remove('hidden');
+                    recBtn.classList.add('hidden');
+                };
+                mediaRecorder.start();
+                recBtn.style.backgroundColor = 'white';
+                
+                let start = Date.now();
+                recInterval = setInterval(() => {
+                    let s = Math.floor((Date.now() - start)/1000);
+                    timerDisplay.innerText = `00:${s.toString().padStart(2,'0')}`;
+                    if(s >= 60) stopRec();
+                }, 1000);
+            } catch(e) { alert("Micrófono necesario"); }
+        }
+
+        function stopRec() {
+            mediaRecorder.stop();
+            clearInterval(recInterval);
+        }
+
+        function resetRecording() {
+            recordedBlob = null;
+            recBtn.classList.remove('hidden');
+            recBtn.style.backgroundColor = 'red';
+            document.getElementById('post-rec-actions').classList.add('hidden');
+            timerDisplay.innerText = "00:00";
+        }
+
+        function saveAndExit() {
+            alert("Memoria guardada.");
+            goHome();
+        }
+
+        // --- EXPERIENCIA PRINCIPAL ---
+
+        async function startExperience() {
+            if(!recordedBlob) {
+                if(!confirm("No has grabado audio. ¿Usar tono de prueba?")) return;
+            }
+            
+            switchScreen('experience-screen');
+            gameActive = true;
+            isConnected = false;
+            
+            // Objetivo aleatorio (-0.8 a 0.8 para no forzar el cuello)
+            targetRotation = (Math.random() * 1.6) - 0.8; 
+            console.log("Objetivo en: ", targetRotation);
+
+            // Iniciar Audio Context
+            if (!audioCtx) initAudioSystem();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+
+            // Iniciar Cámara
+            await setupCamera();
+            
+            // Iniciar Loop IA
+            detectFrame();
+        }
+
+        async function setupCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: 640, height: 480, facingMode: 'user' }
+            });
+            video.srcObject = stream;
+            return new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    video.play();
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    resolve(video);
+                };
+            });
+        }
+
+        function stopExperience() {
+            gameActive = false;
+            cancelAnimationFrame(animationId);
+            if(video.srcObject) {
+                video.srcObject.getTracks().forEach(t => t.stop());
+            }
+            silenceAll();
+            goHome();
+        }
+
+        // --- LÓGICA IA Y DETECCIÓN ---
+        async function detectFrame() {
+            if(!gameActive) return;
+
+            // Detectar caras
+            try {
+                const predictions = await model.estimateFaces(video);
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                if (predictions.length > 0) {
+                    const keypoints = predictions[0].keypoints;
+                    
+                    // 1. DETECTAR OJOS CERRADOS (EAR - Eye Aspect Ratio)
+                    // Puntos clave MediaPipe:
+                    // Ojo Izq: 159 (arriba), 145 (abajo), 33 (izq), 133 (der)
+                    // Ojo Der: 386 (arriba), 374 (abajo), 362 (izq), 263 (der)
+                    
+                    const leftEyeV = dist(keypoints[159], keypoints[145]);
+                    const leftEyeH = dist(keypoints[33], keypoints[133]);
+                    const rightEyeV = dist(keypoints[386], keypoints[374]);
+                    const rightEyeH = dist(keypoints[362], keypoints[263]);
+
+                    const leftEAR = leftEyeV / leftEyeH;
+                    const rightEAR = rightEyeV / rightEyeH;
+                    const avgEAR = (leftEAR + rightEAR) / 2;
+
+                    // Umbral empírico: < 0.15 suele ser ojos cerrados
+                    const isClosedNow = avgEAR < 0.18; 
+
+                    // 2. DETECTAR DIRECCIÓN CABEZA (Simplificado usando Nariz X)
+                    // Nariz: punto 1. Normalizamos coordenada x (0 a videoWidth) a (-1 a 1)
+                    const nose = keypoints[1];
+                    // Invertimos X porque la cámara es espejo
+                    const noseXNorm = -1 * ((nose.x / video.videoWidth) * 2 - 1); 
+                    
+                    headRotation = noseXNorm; // -1 (izq) a 1 (der) aproximadamente
+
+                    // --- ACTUALIZAR LÓGICA DE JUEGO ---
+                    updateGameState(isClosedNow, headRotation);
+
+                    // DEBUG VISUAL (Solo ojos y nariz)
+                    drawPoint(ctx, keypoints[1], 'red'); // Nariz
+                    drawPoint(ctx, keypoints[159], 'cyan');
+                    drawPoint(ctx, keypoints[145], 'cyan');
+                } else {
+                    // No hay cara
+                    updateGameState(false, 0);
+                }
+            } catch (error) {
+                console.warn("Frame skipping due to detection error:", error);
+            }
+
+            animationId = requestAnimationFrame(detectFrame);
+        }
+
+        function dist(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        function drawPoint(ctx, p, color) {
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 3, 0, 2 * Math.PI);
+            ctx.fill();
+        }
+
+        // --- MOTOR DE JUEGO Y AUDIO ---
+        function updateGameState(isEyesClosed, currentRotation) {
+            const statusEl = document.getElementById('status-indicator');
+            const subEl = document.getElementById('instruction-sub');
+
+            if (!isEyesClosed) {
+                // ESTADO: OJOS ABIERTOS (PAUSA)
+                eyesClosed = false;
+                statusEl.innerText = "¡CIERRA LOS OJOS!";
+                statusEl.className = "text-2xl font-bold mb-4 status-text text-red-500 animate-pulse";
+                subEl.style.opacity = "1";
+                silenceAll();
+                return;
+            }
+
+            // ESTADO: OJOS CERRADOS (JUGANDO)
+            eyesClosed = true;
+            statusEl.innerText = "SINTONIZANDO...";
+            statusEl.className = "text-2xl font-bold mb-4 status-text text-green-500";
+            subEl.style.opacity = "0.2";
+
+            // Calcular distancia al objetivo
+            // Diferencia entre donde miro y donde está el sonido
+            let diff = Math.abs(currentRotation - targetRotation);
+            
+            // Normalizar diff para volumen (si diff es 0, vol es 1. Si diff > 0.5, vol baja)
+            let proximity = 1 - (diff * 2); 
+            if (proximity < 0) proximity = 0;
+
+            if (isConnected) {
+                // YA CONECTADO - SONANDO VOZ
+                // Si se aleja mucho, ¿se pierde? Dejemos que se mantenga si no abre los ojos.
+                if (!voiceSource) playVoice();
+                setHumVolume(0);
+            } else {
+                // BUSCANDO SEÑAL
+                // Si está muy cerca (diff < 0.15) -> CONECTAR
+                if (diff < 0.15) {
+                    isConnected = true;
+                    playConnectionSound();
+                    setHumVolume(0);
+                    setTimeout(() => playVoice(), 500);
+                } else {
+                    // NO CONECTADO -> ZUMBIDO
+                    // Cuanto más cerca, más fuerte el zumbido (o al revés según diseño)
+                    // Diseño original: "girar al lado correcto empieza a sonar mucho"
+                    setHumVolume(proximity);
+                    setHumFreq(50 + (proximity * 100)); // Sube el tono al acercarse
+                }
+            }
+        }
+
+        // --- SISTEMA DE AUDIO ---
+        function initAudioSystem() {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            masterGain = audioCtx.createGain();
+            masterGain.connect(audioCtx.destination);
+            createReverb();
+            
+            // Oscilador Zumbido
+            humOsc = audioCtx.createOscillator();
+            humOsc.type = 'sawtooth';
+            humOsc.frequency.value = 50;
+            humGain = audioCtx.createGain();
+            humGain.gain.value = 0;
+            
+            // Filtro Lowpass para zumbido (suena como bajo el agua)
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = 150;
+
+            humOsc.connect(filter);
+            filter.connect(humGain);
+            humGain.connect(masterGain);
+            humOsc.start();
+        }
+
+        function createReverb() {
+            // Impulso convolución simple para eco
+            const rate = audioCtx.sampleRate;
+            const length = rate * 2; // 2 segundos
+            const impulse = audioCtx.createBuffer(2, length, rate);
+            for(let i=0; i<length; i++) {
+                impulse.getChannelData(0)[i] = (Math.random()*2-1) * Math.pow(1-i/length, 2);
+                impulse.getChannelData(1)[i] = (Math.random()*2-1) * Math.pow(1-i/length, 2);
+            }
+            reverbNode = audioCtx.createConvolver();
+            reverbNode.buffer = impulse;
+        }
+
+        async function playVoice() {
+            if(voiceSource) return;
+            
+            let buffer;
+            if(recordedBlob) {
+                const ab = await recordedBlob.arrayBuffer();
+                buffer = await audioCtx.decodeAudioData(ab);
+            } else {
+                // Tono fallback si no hay grabación
+                buffer = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);
+                const d = buffer.getChannelData(0);
+                for(let i=0; i<d.length; i++) d[i] = Math.sin(i*0.05);
+            }
+
+            voiceSource = audioCtx.createBufferSource();
+            voiceSource.buffer = buffer;
+            voiceSource.loop = true;
+
+            const dry = audioCtx.createGain(); dry.gain.value = 0.5;
+            const wet = audioCtx.createGain(); wet.gain.value = 0.8;
+
+            voiceSource.connect(dry);
+            voiceSource.connect(reverbNode);
+            reverbNode.connect(wet);
+            dry.connect(masterGain);
+            wet.connect(masterGain);
+
+            voiceSource.start();
+        }
+
+        function playConnectionSound() {
+            const osc = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            osc.frequency.setValueAtTime(100, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.2);
+            g.gain.setValueAtTime(0.5, audioCtx.currentTime);
+            g.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
+            osc.connect(g);
+            g.connect(masterGain);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.4);
+        }
+
+        function setHumVolume(val) {
+            if(humGain) humGain.gain.setTargetAtTime(val * 0.5, audioCtx.currentTime, 0.1);
+        }
+        function setHumFreq(val) {
+            if(humOsc) humOsc.frequency.setTargetAtTime(val, audioCtx.currentTime, 0.1);
+        }
+
+        function silenceAll() {
+            if(humGain) humGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.1);
+            if(voiceSource) {
+                try { voiceSource.stop(); } catch(e){}
+                voiceSource = null;
+            }
+        }
+
+    </script>
+</body>
+</html>
