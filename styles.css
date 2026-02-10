@@ -1,0 +1,80 @@
+body {
+    background-color: #000;
+    color: #fff;
+    font-family: 'Courier New', Courier, monospace;
+    overflow: hidden;
+    user-select: none;
+}
+
+.scan-line {
+    width: 100%;
+    height: 2px;
+    background: rgba(0, 255, 0, 0.3);
+    position: absolute;
+    animation: scan 3s linear infinite;
+    z-index: 10;
+    pointer-events: none;
+}
+
+@keyframes scan { 
+    0% { top: 0%; } 
+    100% { top: 100%; } 
+}
+
+.hidden { 
+    display: none !important; 
+}
+
+#webcam {
+    position: absolute;
+    top: 0;
+    left: 0;
+    opacity: 0; 
+    z-index: -1;
+    width: 640px;
+    height: 480px;
+    transform: scaleX(-1);
+}
+
+#output {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scaleX(-1);
+    z-index: 5;
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.loader {
+    border: 4px solid #333;
+    border-top: 4px solid #fff;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin { 
+    0% { transform: rotate(0deg); } 
+    100% { transform: rotate(360deg); } 
+}
+
+/* Animación de pulso para instrucciones */
+.pulse-text { 
+    animation: textPulse 1s infinite alternate; 
+}
+
+@keyframes textPulse { 
+    from { opacity: 0.6; } 
+    to { opacity: 1; } 
+}
+
+/* Indicador de detección de cara */
+#face-indicator {
+    transition: background-color 0.3s ease;
+}
+
+#face-indicator.detected {
+    background-color: #0f0;
+}
